@@ -15,32 +15,51 @@ type refKey struct {
 	env Env
 }
 
+// interfaceKey identifies an interface type across package variants.  Pointer
+// identity is not stable when the same source package is loaded in regular and
+// test-compiled forms, so named interfaces are keyed by their defining object.
+type interfaceKey struct {
+	pkgPath string
+	name    string
+}
+
 // ifaceAssignment records that a concrete named type was observed being used
 // as a particular interface type, enabling method-usage propagation.
 type ifaceAssignment struct {
 	concrete *types.Named
-	iface    *types.Interface
-	env      Env
+	iface    interfaceKey
+}
+
+// ifaceMethodUse records that a method was selected on an interface value.
+type ifaceMethodUse struct {
+	iface  interfaceKey
+	method string
+	env    Env
+}
+
+type interfaceDispatchFacts struct {
+	assigns    []ifaceAssignment
+	methodUses []ifaceMethodUse
 }
 
 // collectReferences walks all reference packages, marks used declarations in
-// the UsageIndex, and returns the list of concrete→interface assignments found.
+// the UsageIndex, and returns interface-dispatch facts found in the module.
 func collectReferences(
 	pkgs []*packages.Package,
 	fset *token.FileSet,
 	declIdx *DeclIndex,
 	usage *UsageIndex,
-) []ifaceAssignment {
+) interfaceDispatchFacts {
 	seen := make(map[refKey]bool)
-	var assigns []ifaceAssignment
+	var facts interfaceDispatchFacts
 
 	for _, pkg := range pkgs {
 		if pkg.TypesInfo == nil {
 			continue
 		}
-		collectPkgReferences(pkg, fset, declIdx, usage, seen, &assigns)
+		collectPkgReferences(pkg, fset, declIdx, usage, seen, &facts)
 	}
-	return assigns
+	return facts
 }
 
 func collectPkgReferences(
@@ -49,7 +68,7 @@ func collectPkgReferences(
 	declIdx *DeclIndex,
 	usage *UsageIndex,
 	seen map[refKey]bool,
-	assigns *[]ifaceAssignment,
+	facts *interfaceDispatchFacts,
 ) {
 	info := pkg.TypesInfo
 
@@ -101,6 +120,17 @@ func collectPkgReferences(
 	// mark every anonymous field along the promotion path as used, so that
 	// "embedded via struct" does not appear as unused.
 	for selExpr, sel := range info.Selections {
+		if fn, ok := sel.Obj().(*types.Func); ok {
+			if key, ok := interfaceKeyForType(sel.Recv()); ok {
+				env := fileEnv(fset.Position(selExpr.Pos()).Filename)
+				facts.methodUses = append(facts.methodUses, ifaceMethodUse{
+					iface:  key,
+					method: fn.Name(),
+					env:    env,
+				})
+			}
+		}
+
 		indices := sel.Index()
 		if len(indices) <= 1 {
 			continue // not promoted; already handled by Uses
@@ -132,18 +162,64 @@ func collectPkgReferences(
 
 	// ── Interface assignments — collect for dispatch propagation ─────────────
 	for _, file := range pkg.Syntax {
-		filename := fset.Position(file.Pos()).Filename
-		env := fileEnv(filename)
-		ast.Inspect(file, func(n ast.Node) bool {
-			collectIfaceAssigns(n, info, env, assigns)
-			return true
-		})
+		collectIfaceAssignsInFile(file, info, &facts.assigns)
 	}
+}
+
+func collectIfaceAssignsInFile(file *ast.File, info *types.Info, assigns *[]ifaceAssignment) {
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.FuncDecl:
+			if node.Body == nil {
+				return false
+			}
+			obj := info.Defs[node.Name]
+			if obj == nil {
+				return false
+			}
+			sig, ok := obj.Type().Underlying().(*types.Signature)
+			if !ok {
+				return false
+			}
+			collectIfaceAssignsInFunc(node.Body, sig, info, assigns)
+			return false
+		case *ast.FuncLit:
+			sig, ok := info.TypeOf(node).Underlying().(*types.Signature)
+			if !ok {
+				return false
+			}
+			collectIfaceAssignsInFunc(node.Body, sig, info, assigns)
+			return false
+		default:
+			collectIfaceAssigns(n, nil, info, assigns)
+			return true
+		}
+	})
+}
+
+func collectIfaceAssignsInFunc(
+	body *ast.BlockStmt,
+	sig *types.Signature,
+	info *types.Info,
+	assigns *[]ifaceAssignment,
+) {
+	ast.Inspect(body, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.FuncLit); ok {
+			litSig, ok := info.TypeOf(lit).Underlying().(*types.Signature)
+			if !ok {
+				return false
+			}
+			collectIfaceAssignsInFunc(lit.Body, litSig, info, assigns)
+			return false
+		}
+		collectIfaceAssigns(n, sig.Results(), info, assigns)
+		return true
+	})
 }
 
 // collectIfaceAssigns inspects one AST node and records any concrete→interface
 // assignments it finds.
-func collectIfaceAssigns(n ast.Node, info *types.Info, env Env, assigns *[]ifaceAssignment) {
+func collectIfaceAssigns(n ast.Node, results *types.Tuple, info *types.Info, assigns *[]ifaceAssignment) {
 	switch node := n.(type) {
 
 	case *ast.AssignStmt:
@@ -153,14 +229,14 @@ func collectIfaceAssigns(n ast.Node, info *types.Info, env Env, assigns *[]iface
 			}
 			lhsT := info.TypeOf(node.Lhs[i])
 			rhsT := info.TypeOf(rhs)
-			recordIfaceAssign(lhsT, rhsT, env, assigns)
+			recordIfaceAssign(lhsT, rhsT, assigns)
 		}
 
 	case *ast.ValueSpec:
 		if node.Type != nil {
 			specT := info.TypeOf(node.Type)
 			for _, val := range node.Values {
-				recordIfaceAssign(specT, info.TypeOf(val), env, assigns)
+				recordIfaceAssign(specT, info.TypeOf(val), assigns)
 			}
 		}
 
@@ -174,6 +250,9 @@ func collectIfaceAssigns(n ast.Node, info *types.Info, env Env, assigns *[]iface
 			return
 		}
 		params := sig.Params()
+		if params.Len() == 0 {
+			return
+		}
 		for i, arg := range node.Args {
 			var paramT types.Type
 			if sig.Variadic() && i >= params.Len()-1 {
@@ -186,12 +265,16 @@ func collectIfaceAssigns(n ast.Node, info *types.Info, env Env, assigns *[]iface
 			if paramT == nil {
 				continue
 			}
-			recordIfaceAssign(paramT, info.TypeOf(arg), env, assigns)
+			recordIfaceAssign(paramT, info.TypeOf(arg), assigns)
 		}
 
 	case *ast.ReturnStmt:
-		// Return types require the enclosing function signature; skip for now
-		// (conservative: we may miss some propagation but produce no false positives).
+		if results == nil || results.Len() != len(node.Results) {
+			return
+		}
+		for i, result := range node.Results {
+			recordIfaceAssign(results.At(i).Type(), info.TypeOf(result), assigns)
+		}
 
 	case *ast.CompositeLit:
 		litT := info.TypeOf(node)
@@ -208,14 +291,14 @@ func collectIfaceAssigns(n ast.Node, info *types.Info, env Env, assigns *[]iface
 				if key, ok := e.Key.(*ast.Ident); ok {
 					for j := range st.NumFields() {
 						if st.Field(j).Name() == key.Name {
-							recordIfaceAssign(st.Field(j).Type(), info.TypeOf(e.Value), env, assigns)
+							recordIfaceAssign(st.Field(j).Type(), info.TypeOf(e.Value), assigns)
 							break
 						}
 					}
 				}
 			default:
 				if i < st.NumFields() {
-					recordIfaceAssign(st.Field(i).Type(), info.TypeOf(elt), env, assigns)
+					recordIfaceAssign(st.Field(i).Type(), info.TypeOf(elt), assigns)
 				}
 			}
 		}
@@ -224,11 +307,11 @@ func collectIfaceAssigns(n ast.Node, info *types.Info, env Env, assigns *[]iface
 
 // recordIfaceAssign records a concrete→interface pair when lhsT is an
 // interface and rhsT is (or dereferences to) a named concrete type.
-func recordIfaceAssign(lhsT, rhsT types.Type, env Env, assigns *[]ifaceAssignment) {
+func recordIfaceAssign(lhsT, rhsT types.Type, assigns *[]ifaceAssignment) {
 	if lhsT == nil || rhsT == nil {
 		return
 	}
-	iface, ok := lhsT.Underlying().(*types.Interface)
+	iface, ok := interfaceKeyForType(lhsT)
 	if !ok {
 		return
 	}
@@ -236,14 +319,15 @@ func recordIfaceAssign(lhsT, rhsT types.Type, env Env, assigns *[]ifaceAssignmen
 	if named == nil {
 		return
 	}
-	*assigns = append(*assigns, ifaceAssignment{concrete: named, iface: iface, env: env})
+	*assigns = append(*assigns, ifaceAssignment{concrete: named, iface: iface})
 }
 
 // concreteNamed extracts the *types.Named from a type, dereferencing at most
 // one pointer level.  Returns nil for interface types.
 func concreteNamed(t types.Type) *types.Named {
+	t = types.Unalias(t)
 	if ptr, ok := t.(*types.Pointer); ok {
-		t = ptr.Elem()
+		t = types.Unalias(ptr.Elem())
 	}
 	named, ok := t.(*types.Named)
 	if !ok {
@@ -255,59 +339,46 @@ func concreteNamed(t types.Type) *types.Named {
 	return named
 }
 
+func interfaceKeyForType(t types.Type) (interfaceKey, bool) {
+	t = types.Unalias(t)
+	named, ok := t.(*types.Named)
+	if !ok {
+		return interfaceKey{}, false
+	}
+	if _, ok := named.Underlying().(*types.Interface); !ok {
+		return interfaceKey{}, false
+	}
+	obj := named.Obj()
+	if obj == nil {
+		return interfaceKey{}, false
+	}
+	pkgPath := ""
+	if obj.Pkg() != nil {
+		pkgPath = obj.Pkg().Path()
+	}
+	return interfaceKey{pkgPath: pkgPath, name: obj.Name()}, true
+}
+
 // propagateInterfaceDispatch propagates usage from used interface methods to
 // the corresponding concrete methods on types that were assigned to those
 // interfaces.
 func propagateInterfaceDispatch(
 	declIdx *DeclIndex,
 	usage *UsageIndex,
-	assigns []ifaceAssignment,
+	facts interfaceDispatchFacts,
 ) {
-	if len(assigns) == 0 {
+	if len(facts.assigns) == 0 || len(facts.methodUses) == 0 {
 		return
 	}
 
-	// Build: interface type → [(concrete named type, env)]
-	type concreteEnv struct {
-		named *types.Named
-		env   Env
-	}
-	ifaceToConcretes := make(map[*types.Interface][]concreteEnv)
-	for _, a := range assigns {
-		ifaceToConcretes[a.iface] = append(ifaceToConcretes[a.iface], concreteEnv{a.concrete, a.env})
+	ifaceToConcretes := make(map[interfaceKey][]*types.Named)
+	for _, a := range facts.assigns {
+		ifaceToConcretes[a.iface] = append(ifaceToConcretes[a.iface], a.concrete)
 	}
 
-	for _, decl := range declIdx.all() {
-		if decl.Kind != KindIfaceMethod {
-			continue
-		}
-		ownerNamed, ok := decl.Owner.Type().(*types.Named)
-		if !ok {
-			continue
-		}
-		iface, ok := ownerNamed.Underlying().(*types.Interface)
-		if !ok {
-			continue
-		}
-
-		state := usage.Get(decl.Object)
-		for _, env := range []Env{EnvProduction, EnvTest} {
-			var methodUsed bool
-			if env == EnvProduction {
-				methodUsed = state.Production
-			} else {
-				methodUsed = state.Test
-			}
-			if !methodUsed {
-				continue
-			}
-
-			for _, ce := range ifaceToConcretes[iface] {
-				if ce.env != env {
-					continue
-				}
-				markConcreteMethod(ce.named, decl.Object.Name(), env, declIdx, usage)
-			}
+	for _, use := range facts.methodUses {
+		for _, concrete := range ifaceToConcretes[use.iface] {
+			markConcreteMethod(concrete, use.method, use.env, declIdx, usage)
 		}
 	}
 }

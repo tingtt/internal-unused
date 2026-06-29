@@ -1,6 +1,8 @@
 package app
 
 import (
+	"io"
+
 	"example.com/iface/internal/svc"
 )
 
@@ -11,4 +13,11 @@ func runWith(r svc.Runner) {
 
 func main() {
 	runWith(svc.Impl{}) // Impl is assigned to Runner → Run() is propagated
+	_ = svc.NewRunner().Run()
+
+	var w io.Writer = &svc.Writer{}
+	_, _ = w.Write(nil)
+
+	var err error = svc.CustomError{}
+	_ = err.Error()
 }

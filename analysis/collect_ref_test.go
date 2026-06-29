@@ -36,20 +36,51 @@ func TestRefCollection_UnusedFieldReported(t *testing.T) {
 	}
 }
 
-// TestRefCollection_InterfaceDispatch verifies that a concrete method is marked
-// used when it is invoked via interface dispatch (Impl assigned to Runner,
-// Run() called on Runner).
-func TestRefCollection_InterfaceDispatch(t *testing.T) {
+// TestRefCollection_InterfaceDispatchMarksMethodsUsed verifies the maintained
+// interface-dispatch boundaries that must not produce unused-method reports.
+func TestRefCollection_InterfaceDispatchMarksMethodsUsed(t *testing.T) {
 	dir := testdataDir(t, "interface")
 	diags := runAnalysis(t, dir, analysis.ModeAll)
 
-	// Impl.Run() is dispatched through Runner.Run(); must not be reported.
-	if containsName(diags, "example.com/iface/internal/svc.Impl.Run") {
-		t.Error("Impl.Run is used via interface dispatch; must not be in diagnostics")
+	cases := []struct {
+		name string
+		decl string
+	}{
+		{
+			name: "parameter conversion to internal interface",
+			decl: "example.com/iface/internal/svc.Impl.Run",
+		},
+		{
+			name: "selected internal interface method",
+			decl: "example.com/iface/internal/svc.Runner.Run",
+		},
+		{
+			name: "return conversion to internal interface",
+			decl: "example.com/iface/internal/svc.ReturnedImpl.Run",
+		},
+		{
+			name: "external package interface",
+			decl: "example.com/iface/internal/svc.Writer.Write",
+		},
+		{
+			name: "predeclared interface",
+			decl: "example.com/iface/internal/svc.CustomError.Error",
+		},
+		{
+			name: "production assignment used from tests",
+			decl: "example.com/iface/internal/svc.ProductionAssignedImpl.Run",
+		},
+		{
+			name: "test package variant interface identity",
+			decl: "example.com/iface/internal/svc.TestVariantImpl.Run",
+		},
 	}
-	// Runner.Run() itself is called directly; must not be reported.
-	if containsName(diags, "example.com/iface/internal/svc.Runner.Run") {
-		t.Error("Runner.Run is called; must not be in diagnostics")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if containsName(diags, tc.decl) {
+				t.Fatalf("%s is used via interface dispatch; must not be in diagnostics", tc.decl)
+			}
+		})
 	}
 }
 
