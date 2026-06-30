@@ -9,4 +9,6 @@ func Use() {
 	_ = pkg.UsedType{UsedField: "x"}
 	_ = pkg.UsedVar
 	_ = pkg.UsedConst
+	_ = pkg.UnusedEmbeddedFieldOwner{}
+	pkg.PromotionA{}.Run()
 }

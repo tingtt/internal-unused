@@ -20,4 +20,7 @@ func main() {
 
 	var err error = svc.CustomError{}
 	_ = err.Error()
+
+	converted := svc.Runner(svc.ConvertedImpl{})
+	_ = converted.Run()
 }

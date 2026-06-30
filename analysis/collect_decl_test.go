@@ -19,6 +19,7 @@ func TestDeclCollection_AllKinds(t *testing.T) {
 		"example.com/simple/internal/pkg.UnusedConst",
 		"example.com/simple/internal/pkg.UnusedType",
 		"example.com/simple/internal/pkg.UsedType.UnusedField",
+		"example.com/simple/internal/pkg.UnusedEmbeddedFieldOwner.ExportedBase",
 	}
 	for _, name := range wantUnused {
 		if !containsName(diags, name) {
@@ -44,6 +45,8 @@ func TestDeclCollection_AllKinds(t *testing.T) {
 		"example.com/simple/internal/pkg.UsedVar",
 		"example.com/simple/internal/pkg.UsedConst",
 		"example.com/simple/internal/pkg.UsedType.UsedField",
+		"example.com/simple/internal/pkg.PromotionA.PromotionB",
+		"example.com/simple/internal/pkg.PromotionB.PromotionC",
 	}
 	for _, name := range wantUsed {
 		if containsName(diags, name) {

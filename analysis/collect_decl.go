@@ -90,8 +90,8 @@ func collectPackageDecls(pkg *packages.Package, fset *token.FileSet, idx *DeclIn
 }
 
 // collectTypeMembers collects methods, struct fields, and interface methods
-// for a named type.  Promoted (embedded) members are NOT collected here;
-// only members directly declared on typeName are considered new declarations.
+// for a named type.  Promoted members are NOT collected here; only members
+// directly declared on typeName are considered new declarations.
 func collectTypeMembers(typeName *types.TypeName, fset *token.FileSet, idx *DeclIndex) {
 	named, ok := typeName.Type().(*types.Named)
 	if !ok {
@@ -116,8 +116,7 @@ func collectTypeMembers(typeName *types.TypeName, fset *token.FileSet, idx *Decl
 	case *types.Struct:
 		for i := range u.NumFields() {
 			f := u.Field(i)
-			// Anonymous (embedded) fields are not new declarations.
-			if f.Exported() && !f.Anonymous() {
+			if f.Exported() {
 				idx.add(&Declaration{
 					Object: f,
 					Kind:   KindField,

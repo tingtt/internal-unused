@@ -13,6 +13,31 @@ type UsedType struct {
 	UnusedField int
 }
 
+// ExportedBase is embedded by other exported types.
+type ExportedBase struct{}
+
+// UnusedEmbeddedFieldOwner declares an exported embedded field that is never
+// selected by consumers.
+type UnusedEmbeddedFieldOwner struct {
+	ExportedBase
+}
+
+// PromotionA starts a multi-level promoted method path.
+type PromotionA struct {
+	PromotionB
+}
+
+// PromotionB is the intermediate embedded field in a promoted method path.
+type PromotionB struct {
+	PromotionC
+}
+
+// PromotionC provides a promoted method.
+type PromotionC struct{}
+
+// Run is selected through PromotionA.
+func (PromotionC) Run() {}
+
 // UnusedType and its members should produce a single diagnostic for the type.
 type UnusedType struct {
 	SomeField string

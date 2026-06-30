@@ -74,6 +74,10 @@ func TestRefCollection_InterfaceDispatchMarksMethodsUsed(t *testing.T) {
 			name: "test package variant interface identity",
 			decl: "example.com/iface/internal/svc.TestVariantImpl.Run",
 		},
+		{
+			name: "explicit interface conversion",
+			decl: "example.com/iface/internal/svc.ConvertedImpl.Run",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

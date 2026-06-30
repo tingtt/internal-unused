@@ -9,10 +9,13 @@ import (
 )
 
 // refKey deduplicates references so the same source location is not counted
-// twice when it appears in both a regular package and its test-compiled variant.
+// twice when it appears in both a regular package and its test-compiled
+// variant, while still allowing one selector to mark multiple declarations
+// along a promoted selection path.
 type refKey struct {
-	pos token.Pos
-	env Env
+	decl *Declaration
+	pos  token.Pos
+	env  Env
 }
 
 // interfaceKey identifies an interface type across package variants.  Pointer
@@ -94,7 +97,8 @@ func collectPkgReferences(
 	// object it resolves to, so this captures functions, types, variables,
 	// constants, methods, fields, and interface methods in one pass.
 	for ident, obj := range info.Uses {
-		if _, ok := declIdx.get(obj); !ok {
+		decl, ok := declIdx.get(obj)
+		if !ok {
 			continue
 		}
 		// Skip the declaration site itself.
@@ -106,7 +110,7 @@ func collectPkgReferences(
 			continue
 		}
 		env := fileEnv(fset.Position(ident.Pos()).Filename)
-		key := refKey{pos: ident.NamePos, env: env}
+		key := refKey{decl: decl, pos: ident.NamePos, env: env}
 		if seen[key] {
 			continue
 		}
@@ -149,8 +153,8 @@ func collectPkgReferences(
 				break
 			}
 			field := st.Field(idx)
-			if _, ok := declIdx.get(field); ok {
-				key := refKey{pos: selExpr.Pos(), env: env}
+			if decl, ok := declIdx.get(field); ok {
+				key := refKey{decl: decl, pos: selExpr.Pos(), env: env}
 				if !seen[key] {
 					seen[key] = true
 					usage.Mark(field, env)
@@ -244,6 +248,12 @@ func collectIfaceAssigns(n ast.Node, results *types.Tuple, info *types.Info, ass
 		fnT := info.TypeOf(node.Fun)
 		if fnT == nil {
 			return
+		}
+		if len(node.Args) == 1 {
+			if _, ok := interfaceKeyForType(fnT); ok {
+				recordIfaceAssign(fnT, info.TypeOf(node.Args[0]), assigns)
+				return
+			}
 		}
 		sig, ok := fnT.Underlying().(*types.Signature)
 		if !ok {

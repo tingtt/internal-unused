@@ -37,6 +37,12 @@ type TestVariantImpl struct{}
 func (TestVariantImpl) Run() error     { return nil }
 func (TestVariantImpl) Unused() string { return "" }
 
+// ConvertedImpl is assigned to Runner through an explicit interface conversion.
+type ConvertedImpl struct{}
+
+func (ConvertedImpl) Run() error     { return nil }
+func (ConvertedImpl) Unused() string { return "" }
+
 // Writer implements an external package interface.
 type Writer struct{}
 
